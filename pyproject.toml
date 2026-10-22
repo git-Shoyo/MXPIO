@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mxpio-sync"
+version = "0.1.1"
+description = "Safely synchronize STM32CubeMX-generated HAL code with PlatformIO C++ projects"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "mxpio contributors" }]
+keywords = ["stm32", "cubemx", "platformio", "hal", "firmware"]
+
+[project.scripts]
+mxpio = "mxpio.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
