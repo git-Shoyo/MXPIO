@@ -1,4 +1,4 @@
-# MXPIO Sync v0.1.1
+# MXPIO Sync v0.1.2
 
 **STM32CubeMXの生成コードを、PlatformIO + STM32Cube HAL + C++へ安全に同期するCLIツール**
 
@@ -94,7 +94,8 @@ edge-controller/
 │   └── manifest.json           # 生成ファイルのハッシュ、元パス等
 ├── include/
 │   ├── mxpio/
-│   │   └── mx_init.h           # C/C++兼用MX_Init宣言
+│   │   ├── mx_init.h           # C/C++兼用MX_Init宣言・ハンドル公開
+│   │   └── mx_handles.h        # HALハンドルのextern "C"宣言を自動生成
 │   └── mx_generated/
 │       ├── main.h
 │       ├── stm32g4xx_hal_conf.h
@@ -125,7 +126,7 @@ int main()
 }
 ```
 
-`mxpio/mx_init.h` は自動生成され、CubeMXの `main.h` を読み込みます。そのため、`main.cpp` では HAL のGPIO関数などを追加のHALヘッダなしで呼び出せます。例えば、CubeMXでPC4を `GPIO_Output` に設定してから次のように記述できます。
+`mxpio/mx_init.h` は自動生成され、CubeMXの `main.h` と `mx_handles.h` を読み込みます。そのため、`main.cpp` では HAL のGPIO関数などを追加のHALヘッダなしで呼び出せます。例えば、CubeMXでPC4を `GPIO_Output` に設定してから次のように記述できます。
 
 ```cpp
 #include "mxpio/mx_init.h"
@@ -139,7 +140,23 @@ int main() {
 }
 ```
 
-`HAL_Delay(500)`で約500msごとに反転するため、点滅1周期は約1秒です。設定したピン以外のGPIOやPeripheral Clockが使えるとは限りません。`htim7`などのタイマハンドルを参照する場合は、CubeMXの生成方式に応じて `#include "tim.h"` などの宣言ヘッダが別途必要です（ハンドルが `main.c` にしか定義されない場合には `extern` 宣言も必要です）。
+`HAL_Delay(500)`で約500msごとに反転するため、点滅1周期は約1秒です。設定したピン以外のGPIOやPeripheral Clockが使えるとは限りません。
+
+v0.1.2以降では、実際に移行するCファイルのグローバルなHALハンドル定義から、`mxpio/mx_handles.h` に宣言を自動生成します。`main.c`にまとめる生成方式と、`tim.c` / `i2c.c`等へ分ける生成方式の両方が対象です。
+
+```cpp
+#include "mxpio/mx_init.h"
+
+// 手動のextern宣言やextern "C"ブロックは不要。
+// CubeMXでTIM8とI2C2を有効にして生成・同期した場合:
+void start_pwm() {
+    HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
+}
+```
+
+`TIM_HandleTypeDef`等の型はHALから読み込み、`htim8` / `hi2c2` / `hdma_*`等の公開ハンドルだけをextern宣言します。変数本体の定義を追加しないため、二重定義は起こしません。`static`変数、関数内変数、関数引数、関数プロトタイプ、単なるextern宣言は対象外です。条件付きの定義は同じ`#if`条件で宣言します。ハンドルの追加・削除は次の`mxpio sync`に追従し、自動生成ヘッダも衝突検査・バックアップ・rollbackの対象です。
+
+標準的な`XXX_HandleTypeDef handle;`形式（初期化、複数変数、配列・ポインタを含む）を対象とし、宣言を独自マクロで生成する形式やCファイル内だけに定義したマクロに依存する条件は対象外です。既存プロジェクトも、ツール更新後に通常の`mxpio diff` / `mxpio sync`で移行できます。ユーザー所有の`main.cpp`は変更しません。
 
 `MX_Init()`は**周辺機能を初期化するだけ**です。CubeMXで生成される `HAL_TIM_PWM_Start()` や `HAL_TIM_Encoder_Start()` が必ず自動実行されるわけではありません。必要な開始処理は明示的に記述してください。
 
