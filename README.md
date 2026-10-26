@@ -1,4 +1,4 @@
-# MXPIO Sync v0.1.2
+# MXPIO Sync v0.1.3
 
 **STM32CubeMXの生成コードを、PlatformIO + STM32Cube HAL + C++へ安全に同期するCLIツール**
 
@@ -13,6 +13,25 @@
 - Windows 11 / macOS / Linux、Python 3.10以降で動作する設計。外部Python依存パッケージなし
 
 > **重要:** `.ioc`だけではC言語の初期化コードは生成できません。STM32CubeMXの **GENERATE CODE** で `Core/Src/main.c` 等を生成してから使います。ツールがCubeMXのGUIを操作したり、`.ioc`からHAL初期化コードを直接合成したりするわけではありません。
+
+## 割り込みベクタの自動設定（v0.1.3）
+
+生成する `MX_Init()` の先頭で、HALが割り込みを有効にする前に `SCB->VTOR` を
+アプリのベクタテーブルへ設定します。リンクされた `g_pfnVectors` のアドレスを使うため、
+Flash先頭アドレスを固定せず、リンカで指定した配置先にも追従します。設定後は
+`__DSB()` / `__ISB()` で変更を反映します。
+
+新規プロジェクトは `mxpio init`、既存プロジェクトは更新後の `mxpio sync` で有効になります。
+`main.cpp` は上書きしません。以前追加した同じベクタを指す手動設定は削除できます。
+`build_src_flags` の `-DUSER_VECT_TAB_ADDRESS` はフレームワークの `SystemInit()` に
+適用されないため、この自動設定には使用しません。
+
+VTORを持つCMSISコア（`SCB_VTOR_TBLOFF_Msk` が定義される環境）が対象です。
+VTORのないコアでは設定を生成コードの条件付きコンパイルで省略し、
+メモリ再マップ処理は自動追加しません。STM32G431CB以外の動作は未検証です。
+ブートローダから直接ジャンプする場合のMSP・割り込み・周辺機能の引き継ぎや、
+独自startupでの別名のベクタシンボルには別途対応が必要です。
+CubeMXで無効な周辺割り込みを有効化したり、タイマ/PWMを開始したりする処理は追加しません。
 
 ## 1. インストール（Windows PowerShell）
 

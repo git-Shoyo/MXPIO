@@ -26,6 +26,16 @@ START = '; >>> MXPIO MANAGED BEGIN (do not edit)'
 END = '; <<< MXPIO MANAGED END'
 SKIP_SOURCES = {'syscalls.c', 'sysmem.c'}
 
+VECTOR_TABLE_SETUP = '''\n  /* mxpio: Select the linked application's vectors before HAL enables interrupts.
+     The linker symbol also follows non-zero Flash offsets. */
+#if defined(SCB_VTOR_TBLOFF_Msk)
+  extern const uint32_t g_pfnVectors[];
+  SCB->VTOR = (uint32_t)(uintptr_t)g_pfnVectors;
+  __DSB();
+  __ISB();
+#endif
+'''
+
 
 class MXPIOError(Exception):
     """Human-readable and recoverable conversion failure."""
@@ -153,7 +163,7 @@ def transform_main(source: str) -> tuple[str, list[str]]:
     # Preserve trailing comments (e.g. USER CODE END 3) within main as comments.
     trailing = source[loop_close + 1: close_brace]
     after_main = source[close_brace + 1:]
-    transformed = (before_main + 'void MX_Init(void)\n{' + before_loop +
+    transformed = (before_main + 'void MX_Init(void)\n{' + VECTOR_TABLE_SETUP + before_loop +
                    '\n  /* mxpio: CubeMX generated while(1) moved to user main.cpp. */\n  return;\n' +
                    trailing + '}\n' + after_main)
     return transformed, ['main.cのmain()をMX_Init()へ変換しました。ユーザーのwhile(1)処理は自動移行されません。']
