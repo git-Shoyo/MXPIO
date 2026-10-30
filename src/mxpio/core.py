@@ -19,6 +19,7 @@ from typing import Any
 
 from . import __version__
 from .handles import generate_handles_header
+from .support import local_board_files, nucleo_support
 
 STATE_DIR = '.mxpio'
 MANIFEST_NAME = 'manifest.json'
@@ -77,8 +78,25 @@ def find_ioc(root: Path) -> Path:
     return files[0]
 
 
+# CubeMX board names are not PlatformIO IDs. Keep verified mappings explicit.
+IOC_BOARD_IDS = {
+    'NUCLEO-F303K8': ('nucleo_f303k8', 'STM32F303K8'),
+    'NUCLEO-G431KB': ('nucleo_g431kb', 'STM32G431KB'),
+    'NUCLEO-G431RB': ('nucleo_g431rb', 'STM32G431RB'),
+    'NUCLEO-G474RE': ('nucleo_g474re', 'STM32G474RE'),
+    'NUCLEO-G491RE': ('nucleo_g491re', 'STM32G491RE'),
+}
+
+
 def detect_board(ioc_data: dict[str, str]) -> str:
-    part = ioc_data.get('Mcu.CPN', '').upper()
+    part = ioc_data.get('Mcu.CPN', '').strip().upper()
+    board_name = ioc_data.get('board', '').strip().upper()
+    known = IOC_BOARD_IDS.get(board_name)
+    if known:
+        board_id, mcu = known
+        if not part.startswith(mcu):
+            raise MXPIOError(f'IOCのboard={board_name}とMcu.CPN={part}が一致しません。CubeMXの設定を確認してください。')
+        return board_id
     match = re.match(r'^STM32([A-Z][0-9]{3}[A-Z0-9]{2})', part)
     if not match:
         raise MXPIOError('MCU名からPlatformIO board IDを推定できません。--board を明示してください。')
@@ -194,7 +212,7 @@ def extract(source: Path, output: Path, board: str | None, env_name: str | None)
     warnings = []
     if chosen_board != detect_board(cfg):
         warnings.append('指定boardとIOCからの推定boardが異なります。MCU一致を必ず確認してください。')
-    if chosen_board != 'genericSTM32G431CB':
+    if chosen_board not in ('genericSTM32G431CB', 'genericSTM32G431KB'):
         warnings.append(f'board={chosen_board} はこの配布版で実機・ビルド未検証です。PlatformIOのboard IDを確認してください。')
     if cfg.get('ProjectManager.FirmwarePackage'):
         warnings.append('CubeMXとPlatformIOのSTM32 HALライブラリバージョンが異なる場合があります。必ずビルドを確認してください。')
@@ -225,6 +243,14 @@ def extract(source: Path, output: Path, board: str | None, env_name: str | None)
         raise MXPIOError(f'{hal_conf}がありません。CubeMX生成ファイルを確認してください。')
     if 'main.h' not in header_names:
         raise MXPIOError('Core/Inc/main.h がありません。')
+    files.update(local_board_files(chosen_board))
+    try:
+        bsp_files, bsp_flags = nucleo_support(source, family, cfg, files)
+    except ValueError as exc:
+        raise MXPIOError(str(exc)) from exc
+    files.update(bsp_files)
+    if bsp_files:
+        warnings.append('STM32G4xx Nucleo BSPのC/Hファイルとボード種別定義を同期します。')
     handle_sources = {name: data.decode('utf-8-sig') for name, data in files.items()
                       if name.startswith(gen_src + '/') and name.endswith('.c')}
     try:
@@ -260,14 +286,41 @@ int main()
         'board_build.stm32cube.custom_config_header = yes',
         'build_flags =',
         '    -Iinclude/mx_generated',
+        *('    ' + flag for flag in bsp_flags),
         END]) + '\n')
     metadata = {'source': os.path.relpath(source.resolve(), output.resolve()),
                 'ioc_name': ioc.name, 'mcu': cfg.get('Mcu.CPN', ''),
                 'board': chosen_board, 'env': chosen_env,
                 'managed_ini': managed, 'tool_version': __version__,
                 'family': family}
-    if (source / 'Middlewares').exists() or (source / 'USB_DEVICE').exists():
-        raise MXPIOError('Middleware/USB構成はv0.1で未対応です。未移行コードを黙って省略しないため停止します。')
+    usb_dir = next((p for p in source.iterdir() if p.is_dir() and p.name.lower() == 'usb_device'),
+                   source / 'USB_DEVICE')
+    middleware = source / 'Middlewares'
+    if usb_dir.exists() or middleware.exists():
+        # CDC uses the matching STM32Cube middleware already bundled by PlatformIO.
+        # Other middleware remains unsupported and must never be silently dropped.
+        if cfg.get('USB_DEVICE.VirtualModeFS') != 'Cdc_FS' or not usb_dir.is_dir():
+            raise MXPIOError('USB CDC FS以外のMiddleware/USB構成は未対応です。')
+        for vendor in middleware.iterdir() if middleware.exists() else ():
+            if not vendor.is_dir() or vendor.name != 'ST':
+                raise MXPIOError(f'未対応Middleware: {vendor.name}')
+            for component in vendor.iterdir():
+                if not component.is_dir() or component.name != 'STM32_USB_Device_Library':
+                    raise MXPIOError(f'未対応Middleware: {component.name}')
+        required = ('App/usb_device.c', 'App/usb_device.h', 'App/usbd_cdc_if.c',
+                    'App/usbd_cdc_if.h', 'App/usbd_desc.c', 'App/usbd_desc.h',
+                    'Target/usbd_conf.c', 'Target/usbd_conf.h')
+        for relative in required:
+            if not (usb_dir / relative).is_file():
+                raise MXPIOError(f'USB CDC生成ファイルがありません: {relative}')
+        for f in sorted(usb_dir.rglob('*')):
+            if not f.is_file() or f.suffix not in ('.c', '.h'):
+                continue
+            target = f"{gen_src if f.suffix == '.c' else gen_inc}/{f.name}"
+            if target in files:
+                raise MXPIOError(f'USB生成ファイル名が重複します: {f.name}')
+            files[target] = f.read_bytes()
+        warnings.append('USB CDC FSを同期します。USB Core/CDCはPlatformIO同梱のSTM32Cubeライブラリを使います。')
     if (source / 'Core' / 'Src').exists() and src.name != 'Src':
         raise MXPIOError('異常なCubeMXディレクトリ構成です。')
     return files, metadata, warnings
@@ -341,6 +394,9 @@ class Plan:
 def plan(source: Path, output: Path, old: dict[str, Any] | None, board: str | None, env_name: str | None) -> Plan:
     source = source.resolve()
     output = output.resolve()
+    # Preserve the original selection when automatic detection gains new boards.
+    if old is not None and board is None:
+        board = old['config']['board']
     files, metadata, notes = extract(source, output, board, env_name)
     if old is not None:
         # board/env changes need intentional fresh init, rather than silently mixing configs.
@@ -499,10 +555,13 @@ def rollback(output: Path, force: bool = False) -> Path:
 
 def source_signature(source: Path) -> str:
     src, inc = detect_layout(source)
-    paths = sorted([*src.glob('*.c'), *inc.glob('*.h'), *source.glob('*.ioc')])
+    paths = sorted([*src.glob('*.c'), *inc.glob('*.h'), *source.glob('*.ioc'),
+                    *source.glob('.cproject'),
+                    *(p for p in (source / 'Drivers/BSP').rglob('*')
+                      if p.is_file() and p.suffix in ('.c', '.h'))])
     h = hashlib.sha256()
     for file in paths:
-        h.update(file.name.encode())
+        h.update(file.relative_to(source).as_posix().encode())
         h.update(file.read_bytes())
     return h.hexdigest()
 

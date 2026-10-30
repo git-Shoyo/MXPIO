@@ -1,4 +1,4 @@
-# MXPIO Sync v0.1.3
+# MXPIO Sync v0.1.5
 
 **STM32CubeMXの生成コードを、PlatformIO + STM32Cube HAL + C++へ安全に同期するCLIツール**
 
@@ -13,6 +13,24 @@
 - Windows 11 / macOS / Linux、Python 3.10以降で動作する設計。外部Python依存パッケージなし
 
 > **重要:** `.ioc`だけではC言語の初期化コードは生成できません。STM32CubeMXの **GENERATE CODE** で `Core/Src/main.c` 等を生成してから使います。ツールがCubeMXのGUIを操作したり、`.ioc`からHAL初期化コードを直接合成したりするわけではありません。
+
+## CubeMXボード名からPlatformIOボードIDを選択（v0.1.5）
+
+- 新規 `init` と `inspect` は、IOCの `board` が既知のボード名ならPlatformIO IDへ変換します。`NUCLEO-F303K8` → `nucleo_f303k8`、`NUCLEO-G431KB` → `nucleo_g431kb` が例です。
+- 対応する名前は上記2種と `NUCLEO-G431RB`、`NUCLEO-G474RE`、`NUCLEO-G491RE` です。既知のボード名と `Mcu.CPN` が矛盾する場合は停止します。
+- `--board` の明示指定を優先します。`board=custom`、未指定、未登録の名前は従来どおりMCU名から汎用IDを推定します。推定IDのPlatformIOでの存在は別途確認が必要です。
+- 既存プロジェクトの `sync` はmanifestに記録されたboardを維持します。ボード名の自動判定が追加されても既存設定は変更しません。既存のboardを変更するには別の出力先へ `init --board ...` してください。
+- この変更はボードIDの選択のみです。F3系BSPの同期や実機検証を追加するものではありません。
+
+## STM32G431KB / Nucleo BSP対応（v0.1.4）
+
+- `genericSTM32G431KB` のプロジェクト内ボード定義を `boards/` に生成します。PlatformIO側に同名の定義がなくてもビルドできます。
+- 生成コードが `stm32g4xx_nucleo.h` を参照する場合、CubeMXの `Drivers/BSP/STM32G4xx_Nucleo` のC/Hファイルを `src/mx_generated/bsp/` と `include/mx_generated/bsp/` に同期します。生成先のビルドは元BSPのパスに依存しません。
+- BSPのインクルードパスと `USE_NUCLEO_32` / `USE_NUCLEO_64` を自動設定します。ボード種別はIOCの既知Nucleo名と `.cproject` の定義から判定し、不明・不一致の場合は停止します。
+- BSPと `.cproject` の変更も `watch` で検出します。BSPの同期・競合保護・バックアップ・ロールバックも通常の生成ファイルと同じです。
+- 新規は `mxpio init`、既存は `mxpio diff` で確認してから `mxpio sync` を実行してください。手動追加済みの同名ボード定義は既存ファイルとして保護されます。
+
+`build_flags` はMXPIOが管理します。ユーザーの追加フラグは管理ブロック外の `build_src_flags` に記載し、同じセクションに `build_flags` を重複定義しないでください。アプリがC++20を使用する場合のコンパイラ・言語標準の選択はユーザー設定です。
 
 ## 割り込みベクタの自動設定（v0.1.3）
 
@@ -102,7 +120,7 @@ mxpio init `
   --board genericSTM32G431CB
 ```
 
-`--board`を省略すると`.ioc`の`Mcu.CPN`から推測します。**正式なPlatformIOボードIDはデバイスごとに確認してください。** STM32G431CBについては該当IDを確認しています。
+`--board`を省略すると`.ioc`の既知の`board`名を優先し、それ以外は`Mcu.CPN`から推測します。**正式なPlatformIOボードIDはデバイスごとに確認してください。** STM32G431CBについては該当IDを確認しています。
 
 初回変換後:
 
@@ -280,7 +298,7 @@ mxpio rollback --force
 ### 未対応・注意点
 
 1. **CubeMXのCコード生成を代行しない**（`.ioc`のみでビルド可能なファームウェアは作れない）。
-2. **FreeRTOS、USB、Middleware**、複雑なカスタム構成は未対応。検出した場合は変換を停止する。
+2. **USB CDC FS** は `USB_Device/App` と `USB_Device/Target` の生成C/Hファイルも同期する。USB Core/CDC本体はPlatformIO同梱のSTM32Cubeライブラリを使用する。FreeRTOS・他のUSBクラス・その他Middlewareは未対応として停止する。
 3. LL API専用プロジェクト、C++生成コード、非標準の`main()`、`while(1)`にユーザーコードがあるものは、自動変換を保証しない。
 4. `stm32xxx_hal_conf.h`はCubeMX側のものを優先し、`board_build.stm32cube.custom_config_header = yes`を設定する。**CubeMX生成の`system_stm32xxx.c`やstartupファイルは使用せずPlatformIO提供版を利用**。特殊なsystem構成では一致しない場合がある。
 5. CubeMX側とPlatformIO側で **HALライブラリのバージョンが異なる**とコンパイルエラー等が出る可能性がある。
